@@ -16,6 +16,7 @@ import org.knowm.xchart.XYChartBuilder;
 import javax.swing.*;
 import java.io.File;
 import java.io.IOException;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,13 +49,14 @@ public class Application {
     public static void main(String[] args) {
         Map<String, Integer> targets = new LinkedHashMap<>();
         targets.put("java-spring-boot", 8001);
+        targets.put("java-micronaut", 8006);
         targets.put("kotlin-spring-boot-reactive", 8005);
         targets.put("cs-aspnet-core", 8002);
         targets.put("nodejs-restify", 8003);
         targets.put("nodejs-express", 8004);
 
-        Map<String, List<Long>> results = targets.entrySet().stream()
-                .collect(toMap(Entry::getKey, Application::performFullTest));
+        Map<String, TestResult> results = targets.entrySet().stream()
+                .collect(toMap(Entry::getKey, Application::performFullTest, (a, b) -> a, LinkedHashMap::new));
 
         XYChart chart = new XYChartBuilder()
                 .title("Async Test")
@@ -64,19 +66,33 @@ public class Application {
 
         results.forEach((key, value) ->
                 chart.addSeries(key,
-                        value.stream().mapToDouble(Long::doubleValue).toArray(),
-                        iterate(0, i -> i < value.size(), i -> i + 1).mapToDouble(Integer::doubleValue).toArray()));
+                        value.getResult().stream().mapToDouble(Long::doubleValue).toArray(),
+                        iterate(0, i -> i < value.getResult().size(), i -> i + 1).mapToDouble(Integer::doubleValue).toArray()));
+
+        results.entrySet().stream()
+                .sorted(Comparator.comparingLong(a -> a.getValue().getStartTimeMs()))
+                .forEach(entry -> System.out.printf("%s start time: %dms%n", entry.getKey(), entry.getValue().getStartTimeMs()));
 
         JFrame frame = new SwingWrapper<>(chart).displayChart();
         frame.setExtendedState(frame.getExtendedState() | MAXIMIZED_BOTH);
     }
 
     @SneakyThrows
-    private static List<Long> performFullTest(Entry<String, Integer> entry) {
+    private static TestResult performFullTest(Entry<String, Integer> entry) {
+        buildServer(entry.getKey(), entry.getValue());
+
+        long startTime = currentTimeMillis();
         Process process = startServer(entry.getKey(), entry.getValue());
+        long startElapsedMs = currentTimeMillis() - startTime;
+
         try {
             performTest(entry.getValue(), 10);
-            return performTest(entry.getValue(), 100);
+            List<Long> result = performTest(entry.getValue(), 100);
+
+            return TestResult.builder()
+                    .startTimeMs(startElapsedMs)
+                    .result(result)
+                    .build();
         } finally {
             if (process != null) {
                 process.descendants().forEach(processHandle -> {
@@ -158,6 +174,27 @@ public class Application {
     }
 
     @SneakyThrows
+    private static boolean buildServer(String name, int port) {
+        if (ping(port)) {
+            return false;
+        }
+
+        File shell = new File(System.getenv("ComSpec"));
+        File directory = new File("../token-server/" + name);
+        if (!new File(directory, "build.cmd").exists()) {
+            return false;
+        }
+
+        new ProcessBuilder(shell.toString(), "/c", "build.cmd")
+                .directory(directory.getAbsoluteFile())
+                .inheritIO()
+                .start()
+                .waitFor();
+
+        return true;
+    }
+
+    @SneakyThrows
     private static Process startServer(String name, int port) {
         if (ping(port)) {
             return null;
@@ -176,7 +213,7 @@ public class Application {
                 process.destroyForcibly();
                 throw new IllegalStateException("Failed to start server " + name);
             }
-            Thread.sleep(1000);
+            Thread.sleep(100);
         }
 
         return process;

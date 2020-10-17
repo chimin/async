@@ -1,0 +1,5 @@
+micronaut:
+  server:
+    port: 8006
+  application:
+    name: tokenServer
